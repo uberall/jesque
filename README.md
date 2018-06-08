@@ -2,6 +2,29 @@
 
 [![Build Status](http://img.shields.io/travis/gresrun/jesque.svg)](https://travis-ci.org/gresrun/jesque) [![Coverage Status](http://img.shields.io/coveralls/gresrun/jesque.svg)](https://coveralls.io/r/gresrun/jesque) [![License Apache 2.0](http://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/gresrun/jesque/blob/master/LICENSE) [![Maven Central](https://img.shields.io/maven-central/v/net.greghaines/jesque.svg)](http://search.maven.org/#search%7Cgav%7C1%7Cg%3A%22net.greghaines%22%20AND%20a%3A%22jesque%22)
 
+# NOTE
+
+This repo is a fork of the original jesque with some additional patches on top.
+Releases/Tags will have the `-UBERALL` suffix, in order to not clash with releases done by the owner
+of the original repo.
+
+Note: only changes made by uberall are listed here. Some of them have been merged to upstream already.
+
+*Changelog*
+* 2.1.3-UBERALL
+    * FEATURE: allow to set a max number of failed items to keep via FailQueueStrategy (MERGED)
+    * FEATURE: add nextQueueStrategy feature to WorkerPoolImpl (MERGED)
+* 2.1.4-UBERALL
+    * FIX: remove WITHSCORES when popping from a delayed queue (MERGED)
+    * FIX: properly handle delayed queues when using RESET_TO_HIGHEST_PRIORITY strategy (MERGED)
+* 2.1.5-UBERALL
+    * FIX: fix case where we missed pushing a JobFailure (MERGED)
+    * FEATURE: more information about delayed queues and it's jobs (MERGED)
+    * FIX: don't re-enqueue a successful job if worker is in SHUTDOWN_IMMEDIATE state (MERGED)
+* 2.1.6-UBERALL
+    * FIX: reload redis scripts on reconnect (MERGED)
+
+
 Jesque is an implementation of [Resque](https://github.com/resque/resque) in [Java](http://www.oracle.com/technetwork/java/index.html). It is fully-interoperable with the [Ruby](http://www.ruby-lang.org/en/) and [Node.js](http://nodejs.org/) ([Coffee-Resque](https://github.com/technoweenie/coffee-resque)) implementations.
 
 Jesque is a [Maven](http://maven.apache.org/) project and depends on [Jedis](https://github.com/xetorthio/jedis) to connect to [Redis](http://redis.io/), [Jackson](https://github.com/FasterXML/jackson) to map to/from [JSON](http://json.org/) and [SLF4J](http://slf4j.org/) for logging.
