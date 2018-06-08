@@ -20,10 +20,7 @@ import static net.greghaines.jesque.utils.ResqueConstants.QUEUE;
 import static net.greghaines.jesque.utils.ResqueConstants.QUEUES;
 import static net.greghaines.jesque.utils.ResqueConstants.STAT;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 
 import net.greghaines.jesque.Config;
 import net.greghaines.jesque.Job;
@@ -35,6 +32,7 @@ import net.greghaines.jesque.utils.JesqueUtils;
 import net.greghaines.jesque.utils.PoolUtils;
 import net.greghaines.jesque.utils.PoolUtils.PoolWork;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.Tuple;
 import redis.clients.util.Pool;
 
 /**
@@ -161,10 +159,12 @@ public class QueueInfoDAORedisImpl implements QueueInfoDAO {
                 queueInfo.setName(name);
                 queueInfo.setSize(size(jedis, name));
                 queueInfo.setDelayed(delayed(jedis, name));
-                final Collection<String> payloads = paylods(jedis, name, jobOffset, jobCount);
-                final List<Job> jobs = new ArrayList<Job>(payloads.size());
-                for (final String payload : payloads) {
-                    jobs.add(ObjectMapperFactory.get().readValue(payload, Job.class));
+                final Collection<JobPayload> payloads = getJobPayloads(jedis, name, jobOffset, jobCount);
+                final List<Job> jobs = new ArrayList<>(payloads.size());
+                for (final JobPayload jobPayload : payloads) {
+                    final Job job = ObjectMapperFactory.get().readValue(jobPayload.element, Job.class);
+                    job.setRunAt(jobPayload.score);
+                    jobs.add(job);
                 }
                 queueInfo.setJobs(jobs);
                 return queueInfo;
@@ -225,7 +225,7 @@ public class QueueInfoDAORedisImpl implements QueueInfoDAO {
     }
 
     /**
-     * Get list of payload from a queue.
+     * Get list of JobPayload from a queue.
      * 
      * @param jedis
      * @param queueName
@@ -233,14 +233,31 @@ public class QueueInfoDAORedisImpl implements QueueInfoDAO {
      * @param jobCount
      * @return
      */
-    private Collection<String> paylods(final Jedis jedis, final String queueName, final long jobOffset, final long jobCount) {
+    private Collection<JobPayload> getJobPayloads(final Jedis jedis, final String queueName, final long jobOffset, final long jobCount) {
         final String key = key(QUEUE, queueName);
-        final Collection<String> payloads;
-        if (JedisUtils.isDelayedQueue(jedis, key)) { // If delayed queue, use ZRANGE
-            payloads = jedis.zrange(key, jobOffset, jobOffset + jobCount - 1);
+        final Collection<JobPayload> jobPayloads = new ArrayList<>();
+        if (JedisUtils.isDelayedQueue(jedis, key)) { // If delayed queue, use ZRANGEWITHSCORES
+            final Set<Tuple> elements = jedis.zrangeWithScores(key, jobOffset, jobOffset + jobCount - 1);
+            for (final Tuple elementWithScore : elements) {
+                jobPayloads.add(new JobPayload(elementWithScore.getElement(), elementWithScore.getScore()));
+            }
         } else { // Else, use LRANGE
-            payloads = jedis.lrange(key, jobOffset, jobOffset + jobCount - 1);
+            final List<String> elements = jedis.lrange(key, jobOffset, jobOffset + jobCount - 1);
+            for (final String element : elements) {
+                jobPayloads.add(new JobPayload(element, null));
+            }
         }
-        return payloads;
+        return jobPayloads;
     }
+
+    class JobPayload {
+        String element;
+        Double score;
+
+        JobPayload(String element, Double score) {
+            this.element = element;
+            this.score = score;
+        }
+    }
+
 }
