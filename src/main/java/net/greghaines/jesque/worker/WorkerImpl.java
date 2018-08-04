@@ -15,119 +15,31 @@
  */
 package net.greghaines.jesque.worker;
 
-import static net.greghaines.jesque.utils.ResqueConstants.*;
-import static net.greghaines.jesque.worker.JobExecutor.State.*;
-import static net.greghaines.jesque.worker.WorkerEvent.*;
-
-import java.io.IOException;
-import java.lang.management.ManagementFactory;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-import java.text.SimpleDateFormat;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Date;
-import java.util.concurrent.BlockingDeque;
-import java.util.concurrent.Callable;
-import java.util.concurrent.LinkedBlockingDeque;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import com.fasterxml.jackson.core.JsonParseException;
-import com.fasterxml.jackson.databind.JsonMappingException;
-
 import net.greghaines.jesque.Config;
 import net.greghaines.jesque.Job;
-import net.greghaines.jesque.JobFailure;
-import net.greghaines.jesque.WorkerStatus;
-import net.greghaines.jesque.json.ObjectMapperFactory;
 import net.greghaines.jesque.utils.JedisUtils;
 import net.greghaines.jesque.utils.JesqueUtils;
-import net.greghaines.jesque.utils.ScriptUtils;
-import net.greghaines.jesque.utils.VersionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.Transaction;
-import redis.clients.jedis.exceptions.JedisException;
+
+import java.io.IOException;
+import java.util.Collection;
+import java.util.Set;
+
+import static net.greghaines.jesque.utils.ResqueConstants.*;
+import static net.greghaines.jesque.worker.WorkerEvent.WORKER_ERROR;
 
 /**
  * WorkerImpl is an implementation of the Worker interface. Obeys the contract of a Resque worker in Redis.
  */
-public class WorkerImpl implements Worker {
+public class WorkerImpl extends AbstractWorker {
 
     private static final Logger LOG = LoggerFactory.getLogger(WorkerImpl.class);
-    private static final AtomicLong WORKER_COUNTER = new AtomicLong(0);
-    protected static final long EMPTY_QUEUE_SLEEP_TIME = 500; // 500 ms
     protected static final long RECONNECT_SLEEP_TIME = 5000; // 5 sec
     protected static final int RECONNECT_ATTEMPTS = 120; // Total time: 10 min
-    private static final String LPOPLPUSH_LUA = "/workerScripts/jesque_lpoplpush.lua";
-    private static final String POP_LUA = "/workerScripts/jesque_pop.lua";
-    private static final String POP_FROM_MULTIPLE_PRIO_QUEUES = "/workerScripts/fromMultiplePriorityQueues.lua";
 
-    // Set the thread name to the message for debugging
-    private static volatile boolean threadNameChangingEnabled = false;
-    private final NextQueueStrategy nextQueueStrategy;
-
-    /**
-     * @return true if worker threads names will change during normal operation
-     */
-    public static boolean isThreadNameChangingEnabled() {
-        return threadNameChangingEnabled;
-    }
-
-    /**
-     * Enable/disable worker thread renaming during normal operation. (Disabled by default)
-     * <p>
-     * <strong>Warning: Enabling this feature is very expensive CPU-wise!</strong><br>
-     * This feature is designed to assist in debugging worker state but should be disabled in production environments
-     * for performance reasons.
-     * </p>
-     * 
-     * @param enabled whether threads' names should change during normal operation
-     */
-    public static void setThreadNameChangingEnabled(final boolean enabled) {
-        threadNameChangingEnabled = enabled;
-    }
-
-    /**
-     * Verify that the given queues are all valid.
-     * 
-     * @param queues the given queues
-     */
-    protected static void checkQueues(final Iterable<String> queues) {
-        if (queues == null) {
-            throw new IllegalArgumentException("queues must not be null");
-        }
-        for (final String queue : queues) {
-            if (queue == null || "".equals(queue)) {
-                throw new IllegalArgumentException("queues' members must not be null: " + queues);
-            }
-        }
-    }
-
-    protected final Config config;
     protected final Jedis jedis;
-    protected final String namespace;
-    protected final BlockingDeque<String> queueNames = new LinkedBlockingDeque<String>();
-    private final String name;
-    protected final WorkerListenerDelegate listenerDelegate = new WorkerListenerDelegate();
-    protected final AtomicReference<State> state = new AtomicReference<State>(NEW);
-    private final AtomicBoolean paused = new AtomicBoolean(false);
-    private final AtomicBoolean processingJob = new AtomicBoolean(false);
-    private final AtomicReference<String> popScriptHash = new AtomicReference<>(null);
-    private final AtomicReference<String> lpoplpushScriptHash = new AtomicReference<>(null);
-    private final AtomicReference<String> multiPriorityQueuesScriptHash = new AtomicReference<>(null);
-    private final long workerId = WORKER_COUNTER.getAndIncrement();
-    private final String threadNameBase = "Worker-" + this.workerId + " Jesque-" + VersionUtils.getVersion() + ": ";
-    private final AtomicReference<Thread> threadRef = new AtomicReference<Thread>(null);
-    private final AtomicReference<ExceptionHandler> exceptionHandlerRef = new AtomicReference<ExceptionHandler>(
-            new DefaultExceptionHandler());
-    private final AtomicReference<FailQueueStrategy> failQueueStrategyRef;
-    private final JobFactory jobFactory;
 
     /**
      * Creates a new WorkerImpl, which creates it's own connection to Redis using values from the config.<br>
@@ -171,28 +83,14 @@ public class WorkerImpl implements Worker {
      */
     public WorkerImpl(final Config config, final Collection<String> queues, final JobFactory jobFactory,
             final Jedis jedis, final NextQueueStrategy nextQueueStrategy) {
-        if (config == null) {
-            throw new IllegalArgumentException("config must not be null");
-        }
-        if (jobFactory == null) {
-            throw new IllegalArgumentException("jobFactory must not be null");
-        }
+        super(config, queues, jobFactory, nextQueueStrategy);
         if (jedis == null) {
             throw new IllegalArgumentException("jedis must not be null");
         }
-        if (nextQueueStrategy == null) {
-            throw new IllegalArgumentException("nextQueueStrategy must not be null");
-        }
-        checkQueues(queues);
-        this.nextQueueStrategy = nextQueueStrategy;
-        this.config = config;
-        this.jobFactory = jobFactory;
-        this.namespace = config.getNamespace();
         this.jedis = jedis;
-        this.failQueueStrategyRef = new AtomicReference<FailQueueStrategy>(
-                new DefaultFailQueueStrategy(this.namespace));
         authenticateAndSelectDB();
         setQueues(queues);
+<<<<<<< ours
         this.name = createName();
     }
 
@@ -263,161 +161,56 @@ public class WorkerImpl implements Worker {
     @Override
     public boolean isShutdown() {
         return SHUTDOWN.equals(this.state.get()) || SHUTDOWN_IMMEDIATE.equals(this.state.get());
+=======
+>>>>>>> theirs
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
-    public boolean isPaused() {
-        return this.paused.get();
+    protected void doRun() throws Exception {
+        doRun(this.jedis);
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
-    public boolean isProcessingJob() {
-        return this.processingJob.get();
+    protected void doRunFinally() {
+        doRunFinally(this.jedis);
+        this.jedis.quit();
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
-    public void togglePause(final boolean paused) {
-        this.paused.set(paused);
-        synchronized (this.paused) {
-            this.paused.notifyAll();
-        }
+    protected Set<String> getAllQueues() {
+        return doGetAllQueues(this.jedis);
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
-    public String getName() {
-        return this.name;
+    protected void doSetWorkerStatus(final String msg) {
+        doSetWorkerStatus(this.jedis, this.name, msg);
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
-    public WorkerEventEmitter getWorkerEventEmitter() {
-        return this.listenerDelegate;
+    protected void doSetWorkerToPaused() throws IOException {
+        doSetWorkerToPaused(this.jedis, this.name, pauseMsg());
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
-    public Collection<String> getQueues() {
-        return Collections.unmodifiableCollection(this.queueNames);
+    protected void doRemoveWorker() {
+        doRemoveWorker(this.jedis, this.name);
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
-    public void addQueue(final String queueName) {
-        if (queueName == null || "".equals(queueName)) {
-            throw new IllegalArgumentException("queueName must not be null or empty: " + queueName);
-        }
-        this.queueNames.add(queueName);
+    protected void doPollFinally(final String fCurQueue) {
+        doPollFinally(this.jedis, fCurQueue);
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
-    public void removeQueue(final String queueName, final boolean all) {
-        if (queueName == null || "".equals(queueName)) {
-            throw new IllegalArgumentException("queueName must not be null or empty: " + queueName);
-        }
-        if (all) { // Remove all instances
-            boolean tryAgain = true;
-            while (tryAgain) {
-                tryAgain = this.queueNames.remove(queueName);
-            }
-        } else { // Only remove one instance
-            this.queueNames.remove(queueName);
-        }
+    protected String doCallPopScript(final String key, final String workerName, final String curQueue) {
+        return (String) this.jedis.evalsha(this.popScriptHash.get(), 3, key, key(INFLIGHT, this.name, curQueue),
+                JesqueUtils.createRecurringHashKey(key), Long.toString(System.currentTimeMillis()));
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
-    public void removeAllQueues() {
-        this.queueNames.clear();
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void setQueues(final Collection<String> queues) {
-        checkQueues(queues);
-        this.queueNames.clear();
-        this.queueNames.addAll((queues == ALL_QUEUES) // Using object equality on purpose
-                ? this.jedis.smembers(key(QUEUES)) // Like '*' in other clients
-                : queues);
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public JobFactory getJobFactory() {
-        return this.jobFactory;
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public ExceptionHandler getExceptionHandler() {
-        return this.exceptionHandlerRef.get();
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void setExceptionHandler(final ExceptionHandler exceptionHandler) {
-        if (exceptionHandler == null) {
-            throw new IllegalArgumentException("exceptionHandler must not be null");
-        }
-        this.exceptionHandlerRef.set(exceptionHandler);
-    }
-
-    /**
-     * @return the current FailQueueStrategy
-     */
-    public FailQueueStrategy getFailQueueStrategy() {
-        return this.failQueueStrategyRef.get();
-    }
-
-    /**
-     * @param failQueueStrategy the new FailQueueStrategy to use
-     */
-    public void setFailQueueStrategy(final FailQueueStrategy failQueueStrategy) {
-        if (failQueueStrategy == null) {
-            throw new IllegalArgumentException("failQueueStrategy must not be null");
-        }
-        this.failQueueStrategyRef.set(failQueueStrategy);
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void join(final long millis) throws InterruptedException {
-        final Thread workerThread = this.threadRef.get();
-        if (workerThread != null && workerThread.isAlive()) {
-            workerThread.join(millis);
-        }
+    protected String doCallMultiPriorityQueuesScript(final String key, final String workerName, final String curQueue) {
+        return (String) this.jedis.evalsha(this.multiPriorityQueuesScriptHash.get(), 1, curQueue,
+                Long.toString(System.currentTimeMillis()));
     }
 
     /**
@@ -428,6 +221,7 @@ public class WorkerImpl implements Worker {
     }
 
     /**
+<<<<<<< ours
      * Polls the queues for jobs and executes them.
      */
     protected void poll() {
@@ -523,6 +317,9 @@ public class WorkerImpl implements Worker {
      * 
      * @param curQueue the name of the queue that was being processed when the exception was thrown
      * @param ex the exception that was thrown
+=======
+     * {@inheritDoc}
+>>>>>>> theirs
      */
     protected void recoverFromException(final String curQueue, final Exception ex) {
         final RecoveryStrategy recoveryStrategy = this.exceptionHandlerRef.get().onException(this, ex, curQueue);
@@ -557,6 +354,12 @@ public class WorkerImpl implements Worker {
         }
     }
 
+    @Override
+    protected void doProcessFinally(final String curQueue) {
+        removeInFlight(this.jedis, curQueue);
+        this.jedis.del(key(WORKER, this.name));
+    }
+
     private void authenticateAndSelectDB() {
         if (this.config.getPassword() != null) {
             this.jedis.auth(this.config.getPassword());
@@ -564,121 +367,19 @@ public class WorkerImpl implements Worker {
         this.jedis.select(this.config.getDatabase());
     }
 
-    /**
-     * Checks to see if worker is paused. If so, wait until unpaused.
-     * 
-     * @throws IOException if there was an error creating the pause message
-     */
-    protected void checkPaused() throws IOException {
-        if (this.paused.get()) {
-            synchronized (this.paused) {
-                if (this.paused.get()) {
-                    this.jedis.set(key(WORKER, this.name), pauseMsg());
-                }
-                while (this.paused.get()) {
-                    try {
-                        this.paused.wait();
-                    } catch (InterruptedException ie) {
-                        LOG.warn("Worker interrupted", ie);
-                    }
-                }
-                this.jedis.del(key(WORKER, this.name));
-            }
-        }
-    }
-
-    /**
-     * Materializes and executes the given job.
-     * 
-     * @param job the Job to process
-     * @param curQueue the queue the payload came from
-     */
-    protected void process(final Job job, final String curQueue) {
-        try {
-            this.processingJob.set(true);
-            if (threadNameChangingEnabled) {
-                renameThread("Processing " + curQueue + " since " + System.currentTimeMillis());
-            }
-            this.listenerDelegate.fireEvent(JOB_PROCESS, this, curQueue, job, null, null, null);
-            this.jedis.set(key(WORKER, this.name), statusMsg(curQueue, job));
-            final Object instance = this.jobFactory.materializeJob(job);
-            final Object result = execute(job, curQueue, instance);
-            success(job, instance, result, curQueue);
-        } catch (Throwable thrwbl) {
-            failure(thrwbl, job, curQueue);
-        } finally {
-            removeInFlight(curQueue);
-            this.jedis.del(key(WORKER, this.name));
-            this.processingJob.set(false);
-        }
-    }
-
-    private void removeInFlight(final String curQueue) {
-        if (SHUTDOWN_IMMEDIATE.equals(this.state.get())) {
-            lpoplpush(key(INFLIGHT, this.name, curQueue), key(QUEUE, curQueue));
-        } else {
-            this.jedis.lpop(key(INFLIGHT, this.name, curQueue));
-        }
-    }
-
-    /**
-     * Executes the given job.
-     * 
-     * @param job the job to execute
-     * @param curQueue the queue the job came from
-     * @param instance the materialized job
-     * @throws Exception if the instance is a {@link Callable} and throws an exception
-     * @return result of the execution
-     */
-    protected Object execute(final Job job, final String curQueue, final Object instance) throws Exception {
-        if (instance instanceof WorkerAware) {
-            ((WorkerAware) instance).setWorker(this);
-        }
-        this.listenerDelegate.fireEvent(JOB_EXECUTE, this, curQueue, job, instance, null, null);
-        final Object result;
-        if (instance instanceof Callable) {
-            result = ((Callable<?>) instance).call(); // The job is executing!
-        } else if (instance instanceof Runnable) {
-            ((Runnable) instance).run(); // The job is executing!
-            result = null;
-        } else { // Should never happen since we're testing the class earlier
-            throw new ClassCastException(
-                    "Instance must be a Runnable or a Callable: " + instance.getClass().getName() + " - " + instance);
-        }
-        return result;
-    }
-
-    /**
-     * Update the status in Redis on success.
-     * 
-     * @param job the Job that succeeded
-     * @param runner the materialized Job
-     * @param result the result of the successful execution of the Job
-     * @param curQueue the queue the Job came from
-     */
-    protected void success(final Job job, final Object runner, final Object result, final String curQueue) {
+    @Override
+    protected void doSuccess() {
         // The job may have taken a long time; make an effort to ensure the
         // connection is OK
         JedisUtils.ensureJedisConnection(this.jedis);
-        try {
-            this.jedis.incr(key(STAT, PROCESSED));
-            this.jedis.incr(key(STAT, PROCESSED, this.name));
-        } catch (JedisException je) {
-            LOG.warn("Error updating success stats for job=" + job, je);
-        }
-        this.listenerDelegate.fireEvent(JOB_SUCCESS, this, curQueue, job, runner, result, null);
+        this.jedis.incr(key(STAT, PROCESSED));
+        this.jedis.incr(key(STAT, PROCESSED, this.name));
     }
 
-    /**
-     * Update the status in Redis on failure.
-     * 
-     * @param thrwbl the Throwable that occurred
-     * @param job the Job that failed
-     * @param curQueue the queue the Job came from
-     */
-    protected void failure(final Throwable thrwbl, final Job job, final String curQueue) {
-        // The job may have taken a long time; make an effort to ensure the connection is OK
+    @Override
+    protected void doFailure(final Throwable thrwbl, final Job job, final String curQueue) throws Exception {
         JedisUtils.ensureJedisConnection(this.jedis);
+<<<<<<< ours
         try {
             this.jedis.incr(key(STAT, FAILED));
             this.jedis.incr(key(STAT, FAILED, this.name));
@@ -813,4 +514,9 @@ public class WorkerImpl implements Worker {
     public String toString() {
         return this.namespace + COLON + WORKER + COLON + this.name;
     }
+=======
+        doFailure(this.jedis, this.name, curQueue, thrwbl, job, this.failQueueStrategyRef.get(), failMsg(thrwbl, curQueue, job));
+    }
+
+>>>>>>> theirs
 }
