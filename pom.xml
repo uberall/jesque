@@ -8,7 +8,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>net.greghaines</groupId>
     <artifactId>jesque</artifactId>
-    <version>2.1.6-UBERALL</version>
+    <version>2.1.7-UBERALL</version>
     <packaging>jar</packaging>
     <name>Jesque</name>
     <description>An implementation of Resque in Java</description>

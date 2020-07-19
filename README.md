@@ -23,6 +23,11 @@ Note: only changes made by uberall are listed here. Some of them have been merge
     * FIX: don't re-enqueue a successful job if worker is in SHUTDOWN_IMMEDIATE state (MERGED)
 * 2.1.6-UBERALL
     * FIX: reload redis scripts on reconnect (MERGED)
+* 2.1.7-UBERALL
+    * FIX: proper resizing of failed item queue
+    * FIX: allow retrieval of failed job counter
+    * FIX: keep workers alive when redis is loading the dataset
+    * Note: we intentionally stay with jedis 2.x, as grails 3.3 is not compatible with jedis 3.x
 
 
 Jesque is an implementation of [Resque](https://github.com/resque/resque) in [Java](http://www.oracle.com/technetwork/java/index.html). It is fully-interoperable with the [Ruby](http://www.ruby-lang.org/en/) and [Node.js](http://nodejs.org/) ([Coffee-Resque](https://github.com/technoweenie/coffee-resque)) implementations.
