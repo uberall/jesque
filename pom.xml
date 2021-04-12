@@ -52,6 +52,11 @@
             <name>Deployment through GitHub's site deployment plugin</name>
             <url>site/${project.version}</url>
         </site>
+        <repository>
+            <id>github</id>
+            <name>GitHub Uberall Apache Maven Packages</name>
+            <url>https://maven.pkg.github.com/uberall/jesque</url>
+        </repository>
     </distributionManagement>
     <developers>
         <developer>
